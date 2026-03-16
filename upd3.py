@@ -24,16 +24,10 @@ import pandas as pd
 from openpyxl import Workbook, load_workbook
 
 # ========== НАСТРОЙКИ ==========
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-YANDEX_TOKEN = os.getenv('YANDEX_TOKEN')  # OAuth-токен Яндекс
-BASE_YANDEX_FOLDER = os.getenv('BASE_YANDEX_FOLDER', '/Фото за МК')  # Основная папка в Яндекс.Диске
-BASE_FOLDER_URL = os.getenv('BASE_FOLDER_URL', 'https://yadi.sk/d/xq_U3H4ygvkLiw')  # Прямая ссылка на основную папку
-
-# Проверяем, что токены получены
-if not TELEGRAM_TOKEN:
-    raise ValueError("TELEGRAM_TOKEN не установлен в переменных окружения")
-if not YANDEX_TOKEN:
-    raise ValueError("YANDEX_TOKEN не установлен в переменных окружения")
+TELEGRAM_TOKEN = "8508857646:AAF5d-_3XPlXP2OUS9lsxDIisX91Eqn9KHs"
+YANDEX_TOKEN = "y0__xDOmqCvCBjblgMg44jGrxYwqNOfjwisUdV3NRGjT2R4Z0LRr8VB0Q6DIQ"  # OAuth-токен Яндекс
+BASE_YANDEX_FOLDER = "/Фото за МК"  # Основная папка в Яндекс.Диске
+BASE_FOLDER_URL = "https://yadi.sk/d/xq_U3H4ygvkLiw"  # Прямая ссылка на основную папку
 
 # Настройки для Excel
 EXCEL_FILE = "bot_data.xlsx"
@@ -97,15 +91,24 @@ class ExcelManager:
             from datetime import datetime
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            # Получаем следующий ID
-            next_id = ws.max_row  # Текущее количество строк (с заголовком)
+            # Получаем следующий ID (максимальный ID + 1)
+            max_id = 0
+            for row in range(2, ws.max_row + 1):  # начинаем с 2, пропуская заголовок
+                cell_value = ws.cell(row, 1).value  # колонка A - ID
+                if cell_value and isinstance(cell_value, (int, float)):
+                    max_id = max(max_id, int(cell_value))
+            
+            next_id = max_id + 1
+            
+            # Получаем username из базы или используем пустую строку
+            username = ""  # Будет обновлено позже через update_user_info
             
             # Добавляем новую строку
             ws.append([
                 next_id,
                 now,
                 user_id,
-                "",  # username будет добавлен позже
+                username,
                 fio,
                 text,
                 description,
@@ -121,10 +124,12 @@ class ExcelManager:
             return False
     
     def update_user_info(self, user_id: int, username: str = None, fio: str = None):
-        """Обновляет информацию о пользователе"""
+        """Обновляет информацию о пользователе во всех его записях"""
         try:
             wb = load_workbook(self.filename)
             ws = wb[EXCEL_SHEET]
+            
+            updated = False
             
             # Ищем все строки с данным user_id
             for row in range(2, ws.max_row + 1):  # начинаем с 2, пропуская заголовок
@@ -133,9 +138,13 @@ class ExcelManager:
                         ws.cell(row, 4).value = username  # колонка D - Username
                     if fio:
                         ws.cell(row, 5).value = fio  # колонка E - ФИО
+                    updated = True
             
-            wb.save(self.filename)
-            logger.info(f"Информация о пользователе {user_id} обновлена")
+            if updated:
+                wb.save(self.filename)
+                logger.info(f"Информация о пользователе {user_id} обновлена")
+            else:
+                logger.warning(f"Пользователь {user_id} не найден в Excel")
             
         except Exception as e:
             logger.error(f"Ошибка при обновлении информации пользователя: {e}")
@@ -149,9 +158,48 @@ class ExcelManager:
             logger.error(f"Ошибка при чтении Excel: {e}")
             return []
     
+    def get_user_messages(self, user_id: int) -> List[Dict]:
+        """Получает все сообщения конкретного пользователя"""
+        try:
+            df = pd.read_excel(self.filename, sheet_name=EXCEL_SHEET)
+            user_messages = df[df['User ID'] == user_id].to_dict('records')
+            return user_messages
+        except Exception as e:
+            logger.error(f"Ошибка при чтении сообщений пользователя: {e}")
+            return []
+    
     def export_to_file(self) -> str:
         """Экспортирует данные в файл для отправки"""
         return self.filename
+    
+    def get_statistics(self) -> Dict:
+        """Получает статистику по сообщениям"""
+        try:
+            df = pd.read_excel(self.filename, sheet_name=EXCEL_SHEET)
+            
+            stats = {
+                'total_messages': len(df),
+                'text_messages': len(df[df['Тип'] == 'text']),
+                'photo_messages': len(df[df['Тип'] == 'photo']),
+                'unique_users': df['User ID'].nunique(),
+                'users': []
+            }
+            
+            # Статистика по пользователям
+            for user_id in df['User ID'].unique():
+                user_df = df[df['User ID'] == user_id]
+                stats['users'].append({
+                    'user_id': user_id,
+                    'fio': user_df['ФИО'].iloc[0] if not user_df['ФИО'].isna().all() else 'Не указано',
+                    'messages_count': len(user_df),
+                    'first_message': user_df['Дата и время'].min(),
+                    'last_message': user_df['Дата и время'].max()
+                })
+            
+            return stats
+        except Exception as e:
+            logger.error(f"Ошибка при получении статистики: {e}")
+            return {}
 
 # ========== YANDEX DISK ==========
 class YandexDiskUploader:
@@ -338,6 +386,7 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
         ],
         [
             KeyboardButton(text="📊 Показать данные"),
+            KeyboardButton(text="📊 Статистика"),
             KeyboardButton(text="❓ Помощь")
         ],
         [
@@ -619,6 +668,7 @@ async def send_welcome(message: Message, state: FSMContext):
         "/open_main - открыть основную папку\n"
         "/guide - открыть гайд по боту\n"
         "/export - выгрузить все данные в Excel\n"
+        "/stats - показать статистику\n"
         "/cancel - отменить текущую операцию (до загрузки фото)"
     )
     await message.answer(welcome_text, reply_markup=get_main_keyboard(), parse_mode=ParseMode.HTML)
@@ -945,6 +995,56 @@ async def export_data(message: Message, state: FSMContext):
             "❌ Ошибка при экспорте данных.",
             reply_markup=get_main_keyboard()
         )
+
+@router.message(Command("stats"))
+@router.message(F.text == "📊 Статистика")
+async def show_statistics(message: Message, state: FSMContext):
+    """Показывает статистику по сохраненным сообщениям"""
+    try:
+        stats = excel_manager.get_statistics()
+        
+        if not stats or stats['total_messages'] == 0:
+            await message.answer(
+                "📊 <b>Статистика</b>\n\n"
+                "Пока нет сохраненных сообщений.",
+                reply_markup=get_main_keyboard(),
+                parse_mode=ParseMode.HTML
+            )
+            return
+        
+        # Формируем сообщение со статистикой
+        stat_text = (
+            f"📊 <b>Общая статистика</b>\n\n"
+            f"📝 Всего сообщений: {stats['total_messages']}\n"
+            f"📸 Фотографий: {stats['photo_messages']}\n"
+            f"📄 Текстовых записей: {stats['text_messages']}\n"
+            f"👥 Уникальных пользователей: {stats['unique_users']}\n\n"
+            f"<b>Детальная статистика по пользователям:</b>\n"
+        )
+        
+        for user in stats['users']:
+            stat_text += (
+                f"\n👤 {user['fio']} (ID: {user['user_id']})\n"
+                f"  • Сообщений: {user['messages_count']}\n"
+                f"  • Первое: {user['first_message']}\n"
+                f"  • Последнее: {user['last_message']}\n"
+            )
+        
+        # Разбиваем на части если сообщение слишком длинное
+        if len(stat_text) > 4000:
+            parts = [stat_text[i:i+4000] for i in range(0, len(stat_text), 4000)]
+            for i, part in enumerate(parts, 1):
+                await message.answer(
+                    part + (f"\n\n<i>Часть {i}/{len(parts)}</i>" if len(parts) > 1 else ""),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=get_main_keyboard() if i == len(parts) else None
+                )
+        else:
+            await message.answer(stat_text, parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard())
+        
+    except Exception as e:
+        logger.error(f"Ошибка при показе статистики: {e}")
+        await message.answer("❌ Ошибка при получении статистики.", reply_markup=get_main_keyboard())
 
 @router.message(F.text == "❓ Помощь")
 async def help_button(message: Message, state: FSMContext):
