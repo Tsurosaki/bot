@@ -29,6 +29,12 @@ YANDEX_TOKEN = os.getenv('YANDEX_TOKEN')  # OAuth-токен Яндекс
 BASE_YANDEX_FOLDER = os.getenv('BASE_YANDEX_FOLDER', '/Фото за МК')  # Основная папка в Яндекс.Диске
 BASE_FOLDER_URL = os.getenv('BASE_FOLDER_URL', 'https://yadi.sk/d/xq_U3H4ygvkLiw')  # Прямая ссылка на основную папку
 
+# Проверяем, что токены получены
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_TOKEN не установлен в переменных окружения")
+if not YANDEX_TOKEN:
+    raise ValueError("YANDEX_TOKEN не установлен в переменных окружения")
+
 # Настройки для Excel
 EXCEL_FILE = "bot_data.xlsx"
 EXCEL_SHEET = "Messages"
