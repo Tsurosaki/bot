@@ -24,10 +24,10 @@ import pandas as pd
 from openpyxl import Workbook, load_workbook
 
 # ========== НАСТРОЙКИ ==========
-TELEGRAM_TOKEN = "8508857646:AAF5d-_3XPlXP2OUS9lsxDIisX91Eqn9KHs"
-YANDEX_TOKEN = "y0__xDOmqCvCBjblgMg44jGrxYwqNOfjwisUdV3NRGjT2R4Z0LRr8VB0Q6DIQ"  # OAuth-токен Яндекс
-BASE_YANDEX_FOLDER = "/Фото за МК"  # Основная папка в Яндекс.Диске
-BASE_FOLDER_URL = "https://yadi.sk/d/xq_U3H4ygvkLiw"  # Прямая ссылка на основную папку
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+YANDEX_TOKEN = os.getenv('YANDEX_TOKEN')
+BASE_YANDEX_FOLDER = os.getenv('BASE_YANDEX_FOLDER', '/Фото за МК')
+BASE_FOLDER_URL = os.getenv('BASE_FOLDER_URL', 'https://yadi.sk/d/xq_U3H4ygvkLiw')
 
 # Настройки для Excel
 EXCEL_FILE = "bot_data.xlsx"
