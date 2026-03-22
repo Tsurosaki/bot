@@ -4,7 +4,7 @@ import logging
 import asyncio
 import sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 from collections import defaultdict
 
@@ -33,9 +33,13 @@ BASE_FOLDER_URL = os.getenv('BASE_FOLDER_URL', 'https://yadi.sk/d/xq_U3H4ygvkLiw
 EXCEL_FILE = "bot_data.xlsx"
 EXCEL_SHEET = "Messages"
 
+# Настройки для бэкапов
+BACKUP_FOLDER = "backups"
+BACKUP_INTERVAL_HOURS = 24  # Интервал между бэкапами в часах
+BACKUP_RETENTION_DAYS = 30  # Хранить бэкапы 30 дней
+
 # URL с гайдом (можно загрузить на Google Drive, Яндекс.Диск и т.д.)
 GUIDE_URL = "https://disk.yandex.ru/i/C6TD6GXX0rb8FA"  # Замените на реальную ссылку
-GUIDE_FILE_ID = "1example"  # ID файла на Google Drive для прямой ссылки
 
 # Настройка логирования
 logging.basicConfig(
@@ -85,14 +89,41 @@ class ExcelManager:
             wb.save(self.filename)
             logger.info(f"Создан новый Excel файл: {self.filename}")
     
+    def _create_backup(self, backup_type: str = "manual") -> Optional[str]:
+        """Создает бэкап файла перед изменениями"""
+        try:
+            if not os.path.exists(self.filename):
+                return None
+            
+            # Создаем папку для бэкапов если её нет
+            Path(BACKUP_FOLDER).mkdir(exist_ok=True)
+            
+            # Формируем имя бэкапа
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_name = f"{backup_type}_backup_{timestamp}.xlsx"
+            backup_path = os.path.join(BACKUP_FOLDER, backup_name)
+            
+            # Копируем файл
+            import shutil
+            shutil.copy2(self.filename, backup_path)
+            logger.info(f"Создан бэкап: {backup_path}")
+            
+            return backup_path
+            
+        except Exception as e:
+            logger.error(f"Ошибка при создании бэкапа: {e}")
+            return None
+    
     def save_message(self, user_id: int, fio: str, text: str, description: str = "", msg_type: str = "text"):
         """Сохраняет сообщение в Excel"""
         try:
+            # Создаем бэкап перед изменением
+            self._create_backup("auto")
+            
             # Загружаем существующий файл
             wb = load_workbook(self.filename)
             ws = wb[EXCEL_SHEET]
             
-            from datetime import datetime
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
             # Получаем следующий ID (максимальный ID + 1)
@@ -120,7 +151,7 @@ class ExcelManager:
             ])
             
             wb.save(self.filename)
-            logger.info(f"Сообщение сохранено в Excel. User ID: {user_id}, ФИО: {fio}, Текст: {text[:50]}...")
+            logger.info(f"Сообщение сохранено в Excel. User ID: {user_id}, ФИО: {fio}, ID: {next_id}")
             return True
             
         except Exception as e:
@@ -204,6 +235,76 @@ class ExcelManager:
         except Exception as e:
             logger.error(f"Ошибка при получении статистики: {e}")
             return {}
+    
+    def create_manual_backup(self) -> Optional[str]:
+        """Создает ручной бэкап данных"""
+        return self._create_backup("manual")
+    
+    def list_backups(self) -> List[Dict]:
+        """Получает список всех бэкапов"""
+        try:
+            backups = []
+            if os.path.exists(BACKUP_FOLDER):
+                for file in os.listdir(BACKUP_FOLDER):
+                    if file.endswith('.xlsx'):
+                        file_path = os.path.join(BACKUP_FOLDER, file)
+                        stat = os.stat(file_path)
+                        backups.append({
+                            'name': file,
+                            'path': file_path,
+                            'size': stat.st_size,
+                            'created': datetime.fromtimestamp(stat.st_ctime),
+                            'modified': datetime.fromtimestamp(stat.st_mtime)
+                        })
+            return sorted(backups, key=lambda x: x['created'], reverse=True)
+        except Exception as e:
+            logger.error(f"Ошибка при получении списка бэкапов: {e}")
+            return []
+    
+    def restore_backup(self, backup_name: str) -> bool:
+        """Восстанавливает данные из бэкапа"""
+        try:
+            backup_path = os.path.join(BACKUP_FOLDER, backup_name)
+            if os.path.exists(backup_path):
+                # Создаем бэкап текущего файла перед восстановлением
+                self._create_backup("pre_restore")
+                
+                # Восстанавливаем
+                import shutil
+                shutil.copy2(backup_path, self.filename)
+                logger.info(f"Восстановлен бэкап: {backup_name}")
+                return True
+            else:
+                logger.error(f"Бэкап не найден: {backup_name}")
+                return False
+        except Exception as e:
+            logger.error(f"Ошибка при восстановлении бэкапа: {e}")
+            return False
+    
+    def cleanup_old_backups(self):
+        """Удаляет старые бэкапы"""
+        try:
+            if not os.path.exists(BACKUP_FOLDER):
+                return
+            
+            cutoff_time = datetime.now() - timedelta(days=BACKUP_RETENTION_DAYS)
+            deleted_count = 0
+            
+            for file in os.listdir(BACKUP_FOLDER):
+                if file.endswith('.xlsx'):
+                    file_path = os.path.join(BACKUP_FOLDER, file)
+                    file_time = datetime.fromtimestamp(os.path.getctime(file_path))
+                    
+                    if file_time < cutoff_time:
+                        os.remove(file_path)
+                        deleted_count += 1
+                        logger.info(f"Удален старый бэкап: {file}")
+            
+            if deleted_count > 0:
+                logger.info(f"Удалено {deleted_count} старых бэкапов")
+                
+        except Exception as e:
+            logger.error(f"Ошибка при очистке старых бэкапов: {e}")
 
 # ========== YANDEX DISK ==========
 class YandexDiskUploader:
@@ -222,6 +323,12 @@ class YandexDiskUploader:
             if not self.y.exists(BASE_YANDEX_FOLDER):
                 self.y.mkdir(BASE_YANDEX_FOLDER)
                 logger.info(f"Создана основная папка {BASE_YANDEX_FOLDER}")
+            
+            # Создаем папку для бэкапов
+            backup_folder = f"{BASE_YANDEX_FOLDER}/_backups"
+            if not self.y.exists(backup_folder):
+                self.y.mkdir(backup_folder)
+                logger.info(f"Создана папка для бэкапов {backup_folder}")
             
             logger.info("Яндекс.Диск подключен успешно")
             return True
@@ -269,7 +376,7 @@ class YandexDiskUploader:
             folders = []
             
             for item in items:
-                if item.type == 'dir':
+                if item.type == 'dir' and not item.name.startswith('_'):
                     folder_data = {
                         'name': item.name,
                         'path': item.path,
@@ -318,6 +425,22 @@ class YandexDiskUploader:
             return None
         except Exception as e:
             logger.error(f"Ошибка загрузки в Яндекс.Диск: {e}")
+            return None
+    
+    def upload_backup(self, local_path: str) -> Optional[str]:
+        """Загружает бэкап на Яндекс.Диск"""
+        try:
+            backup_name = os.path.basename(local_path)
+            remote_path = f"{BASE_YANDEX_FOLDER}/_backups/{backup_name}"
+            
+            if not self.y.exists(f"{BASE_YANDEX_FOLDER}/_backups"):
+                self.y.mkdir(f"{BASE_YANDEX_FOLDER}/_backups")
+            
+            self.y.upload(local_path, remote_path)
+            logger.info(f"Бэкап загружен на Яндекс.Диск: {remote_path}")
+            return remote_path
+        except Exception as e:
+            logger.error(f"Ошибка загрузки бэкапа на Яндекс.Диск: {e}")
             return None
     
     def get_disk_info(self):
@@ -380,6 +503,9 @@ media_group_storage = defaultdict(list)
 folder_paths = {}
 folder_index_counter = 0
 
+# Флаг для планировщика бэкапов
+backup_task_running = False
+
 # ========== КЛАВИАТУРЫ ==========
 def get_main_keyboard() -> ReplyKeyboardMarkup:
     """Создает основную клавиатуру с кнопками"""
@@ -395,6 +521,9 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
         [
             KeyboardButton(text="📊 Показать данные"),
             KeyboardButton(text="📊 Статистика"),
+            KeyboardButton(text="💾 Управление бэкапами")
+        ],
+        [
             KeyboardButton(text="❓ Помощь")
         ],
         [
@@ -406,6 +535,16 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         input_field_placeholder="Выберите действие..."
     )
+
+def get_backup_keyboard() -> InlineKeyboardMarkup:
+    """Создает клавиатуру для управления бэкапами"""
+    keyboard = [
+        [InlineKeyboardButton(text="💾 Создать бэкап", callback_data="create_backup")],
+        [InlineKeyboardButton(text="📋 Список бэкапов", callback_data="list_backups")],
+        [InlineKeyboardButton(text="🗑️ Очистить старые бэкапы", callback_data="cleanup_backups")],
+        [InlineKeyboardButton(text="🏠 В главное меню", callback_data="back_to_main_menu")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_after_folder_selection_keyboard() -> ReplyKeyboardMarkup:
     """Создает клавиатуру после выбора папки (до загрузки фото)"""
@@ -642,6 +781,46 @@ def get_guide_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+# ========== BACKUP SCHEDULER ==========
+async def backup_scheduler():
+    """Планировщик автоматического резервного копирования"""
+    global backup_task_running
+    
+    if backup_task_running:
+        return
+    
+    backup_task_running = True
+    logger.info("Планировщик бэкапов запущен")
+    
+    while True:
+        try:
+            # Ждем указанный интервал
+            await asyncio.sleep(BACKUP_INTERVAL_HOURS * 60 * 60)
+            
+            logger.info("Запуск автоматического создания бэкапа...")
+            
+            # Создаем бэкап
+            backup_path = excel_manager.create_manual_backup()
+            
+            if backup_path:
+                logger.info(f"Автоматический бэкап создан: {backup_path}")
+                
+                # Загружаем бэкап на Яндекс.Диск если доступен
+                if disk_uploader:
+                    disk_uploader.upload_backup(backup_path)
+                    logger.info("Бэкап загружен на Яндекс.Диск")
+                
+                # Очищаем старые бэкапы
+                excel_manager.cleanup_old_backups()
+                logger.info("Очистка старых бэкапов выполнена")
+            else:
+                logger.warning("Не удалось создать автоматический бэкап")
+                
+        except Exception as e:
+            logger.error(f"Ошибка в планировщике бэкапов: {e}")
+            # В случае ошибки ждем 1 час и пробуем снова
+            await asyncio.sleep(60 * 60)
+
 # ========== HANDLERS ==========
 # Глобальные переменные для хранения данных
 current_folder_list = []
@@ -673,6 +852,10 @@ async def send_welcome(message: Message, state: FSMContext):
         "Сначала нужно будет ввести своё ФИО, затем текст, а затем описание.\n"
         "Отменить этот процесс нельзя - нужно обязательно заполнить все поля.\n\n"
         "После отправки текста вы вернетесь в главное меню.\n\n"
+        "💾 <b>Резервное копирование:</b>\n"
+        f"• Автоматические бэкапы создаются каждые {BACKUP_INTERVAL_HOURS} часов\n"
+        f"• Бэкапы хранятся {BACKUP_RETENTION_DAYS} дней\n"
+        "• Используйте кнопку '💾 Управление бэкапами' для ручного управления\n\n"
         "Помимо этого вы можете создать свою папку с помощью бота и туда выгружать фотографии (если не будет папки с вашей фамилией и именем).\n\n"
         "И помните: я слежу за вами.\n\n"
         "Счастливых голодных игр\n\n"
@@ -686,6 +869,7 @@ async def send_welcome(message: Message, state: FSMContext):
         "/guide - открыть гайд по боту\n"
         "/export - выгрузить все данные в Excel\n"
         "/stats - показать статистику\n"
+        "/backup - управление бэкапами\n"
         "/cancel - отменить текущую операцию (до загрузки фото)"
     )
     await message.answer(welcome_text, reply_markup=get_main_keyboard(), parse_mode=ParseMode.HTML)
@@ -747,6 +931,10 @@ async def send_guide(message: Message, state: FSMContext):
                 "<b>📊 Просмотр данных:</b>\n"
                 "• '📊 Показать данные' - выгрузить Excel файл со всеми записями\n"
                 "• '📊 Статистика' - показать статистику по всем сообщениям\n\n"
+                "<b>💾 Управление бэкапами:</b>\n"
+                "• '💾 Управление бэкапами' - создать бэкап, просмотреть список, очистить старые\n"
+                f"• Автоматические бэкапы создаются каждые {BACKUP_INTERVAL_HOURS} часов\n"
+                f"• Бэкапы хранятся {BACKUP_RETENTION_DAYS} дней\n\n"
                 "<b>📁 Работа с папками:</b>\n"
                 "• '📁 Текущая папка' - открыть текущую папку\n"
                 "• '📂 Основная папка' - открыть основную папку\n"
@@ -776,9 +964,6 @@ async def send_guide(message: Message, state: FSMContext):
 async def download_guide_callback(callback_query: CallbackQuery):
     """Обработчик скачивания гайда"""
     try:
-        # Здесь можно добавить логику для скачивания файла с облачного хранилища
-        # Например, с Яндекс.Диска или Google Drive
-        
         await callback_query.answer()
         await callback_query.message.answer(
             "📥 <b>Скачивание гайда</b>\n\n"
@@ -789,6 +974,115 @@ async def download_guide_callback(callback_query: CallbackQuery):
     except Exception as e:
         logger.error(f"Ошибка при скачивании гайда: {e}")
         await callback_query.answer("❌ Ошибка при скачивании")
+
+@router.message(Command("backup"))
+@router.message(F.text == "💾 Управление бэкапами")
+async def manage_backups(message: Message, state: FSMContext):
+    """Обработчик управления бэкапами"""
+    await message.answer(
+        "💾 <b>Управление резервными копиями</b>\n\n"
+        f"📅 Автоматические бэкапы: каждые {BACKUP_INTERVAL_HOURS} часов\n"
+        f"💾 Хранение бэкапов: {BACKUP_RETENTION_DAYS} дней\n\n"
+        "Выберите действие:",
+        reply_markup=get_backup_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
+
+@router.callback_query(lambda c: c.data == "create_backup")
+async def create_backup_callback(callback_query: CallbackQuery):
+    """Обработчик создания бэкапа"""
+    await callback_query.answer()
+    
+    status_msg = await callback_query.message.answer("⏳ Создаю бэкап...")
+    
+    try:
+        backup_path = excel_manager.create_manual_backup()
+        
+        if backup_path:
+            # Получаем размер файла
+            size = os.path.getsize(backup_path)
+            size_mb = size / (1024 * 1024)
+            
+            # Загружаем на Яндекс.Диск если доступен
+            if disk_uploader:
+                disk_uploader.upload_backup(backup_path)
+            
+            await status_msg.edit_text(
+                f"✅ <b>Бэкап успешно создан!</b>\n\n"
+                f"📁 Файл: {os.path.basename(backup_path)}\n"
+                f"📦 Размер: {size_mb:.2f} МБ\n"
+                f"📅 Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                f"Бэкап сохранен локально и на Яндекс.Диске.",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await status_msg.edit_text("❌ Не удалось создать бэкап.")
+            
+    except Exception as e:
+        logger.error(f"Ошибка при создании бэкапа: {e}")
+        await status_msg.edit_text("❌ Ошибка при создании бэкапа.")
+
+@router.callback_query(lambda c: c.data == "list_backups")
+async def list_backups_callback(callback_query: CallbackQuery):
+    """Обработчик просмотра списка бэкапов"""
+    await callback_query.answer()
+    
+    try:
+        backups = excel_manager.list_backups()
+        
+        if not backups:
+            await callback_query.message.answer(
+                "📋 <b>Список бэкапов</b>\n\n"
+                "Нет сохраненных бэкапов.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_backup_keyboard()
+            )
+            return
+        
+        # Формируем список бэкапов
+        backup_list = "📋 <b>Список бэкапов</b>\n\n"
+        for i, backup in enumerate(backups[:10], 1):  # Показываем последние 10
+            size_mb = backup['size'] / (1024 * 1024)
+            backup_list += (
+                f"{i}. {backup['name']}\n"
+                f"   📅 {backup['created'].strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"   📦 {size_mb:.2f} МБ\n\n"
+            )
+        
+        if len(backups) > 10:
+            backup_list += f"<i>... и еще {len(backups) - 10} бэкапов</i>"
+        
+        await callback_query.message.answer(
+            backup_list,
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_backup_keyboard()
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка бэкапов: {e}")
+        await callback_query.message.answer("❌ Ошибка при получении списка бэкапов.")
+
+@router.callback_query(lambda c: c.data == "cleanup_backups")
+async def cleanup_backups_callback(callback_query: CallbackQuery):
+    """Обработчик очистки старых бэкапов"""
+    await callback_query.answer()
+    
+    status_msg = await callback_query.message.answer("⏳ Очищаю старые бэкапы...")
+    
+    try:
+        excel_manager.cleanup_old_backups()
+        
+        await status_msg.edit_text(
+            f"✅ <b>Очистка старых бэкапов выполнена!</b>\n\n"
+            f"Удалены бэкапы старше {BACKUP_RETENTION_DAYS} дней.\n\n"
+            f"Используйте '📋 Список бэкапов' для просмотра оставшихся.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_backup_keyboard()
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при очистке бэкапов: {e}")
+        await status_msg.edit_text("❌ Ошибка при очистке бэкапов.")
 
 @router.message(Command("open_main"))
 @router.message(F.text == "📁 Открыть основную папку")
@@ -1092,6 +1386,10 @@ async def show_statistics(message: Message, state: FSMContext):
             )
             return
         
+        # Получаем информацию о бэкапах
+        backups = excel_manager.list_backups()
+        total_backup_size = sum(b['size'] for b in backups) / (1024 * 1024)
+        
         # Формируем сообщение со статистикой
         stat_text = (
             f"📊 <b>Общая статистика</b>\n\n"
@@ -1099,16 +1397,24 @@ async def show_statistics(message: Message, state: FSMContext):
             f"📸 Фотографий: {stats['photo_messages']}\n"
             f"📄 Текстовых записей: {stats['text_messages']}\n"
             f"👥 Уникальных пользователей: {stats['unique_users']}\n\n"
+            f"💾 <b>Информация о бэкапах</b>\n"
+            f"📁 Всего бэкапов: {len(backups)}\n"
+            f"💿 Общий размер: {total_backup_size:.2f} МБ\n"
+            f"📅 Автоматические бэкапы: каждые {BACKUP_INTERVAL_HOURS} часов\n"
+            f"🗑️ Хранение: {BACKUP_RETENTION_DAYS} дней\n\n"
             f"<b>Детальная статистика по пользователям:</b>\n"
         )
         
-        for user in stats['users']:
+        for user in stats['users'][:10]:  # Показываем первых 10 пользователей
             stat_text += (
                 f"\n👤 {user['fio']} (ID: {user['user_id']})\n"
                 f"  • Сообщений: {user['messages_count']}\n"
                 f"  • Первое: {user['first_message']}\n"
                 f"  • Последнее: {user['last_message']}\n"
             )
+        
+        if len(stats['users']) > 10:
+            stat_text += f"\n<i>... и еще {len(stats['users']) - 10} пользователей</i>"
         
         # Разбиваем на части если сообщение слишком длинное
         if len(stat_text) > 4000:
@@ -1899,6 +2205,10 @@ async def main():
     if not disk_uploader:
         logger.error("Бот не может быть запущен: Яндекс.Диск не подключен")
         return
+    
+    # Запускаем планировщик бэкапов
+    asyncio.create_task(backup_scheduler())
+    logger.info("Планировщик бэкапов запущен")
     
     # Очищаем временную папку при запуске
     try:
