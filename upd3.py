@@ -1102,13 +1102,18 @@ async def open_current_folder(message: Message, state: FSMContext):
     current_folder = disk_uploader.get_current_folder()
     current_public_url = disk_uploader.get_public_url(current_folder)
     
-    keyboard = get_after_folder_selection_keyboard() if not user_has_uploaded_photos[message.from_user.id] else get_after_photos_keyboard()
+    # Определяем, какую клавиатуру показывать
+    user_id = message.from_user.id
+    if user_has_uploaded_photos[user_id]:
+        keyboard = get_after_photos_keyboard()
+    else:
+        keyboard = get_after_folder_selection_keyboard()
     
     if current_public_url:
         await message.answer(
             f"📁 <b>Текущая папка</b>\n\n"
             f"Папка: <code>{current_folder}</code>\n\n"
-            f"<a href='{current_public_url}'>Открыть в Яндекс.Диске</a>",
+            f"<a href='{current_public_url}'>🔗 Открыть в Яндекс.Диске</a>",
             reply_markup=keyboard,
             parse_mode=ParseMode.HTML
         )
@@ -1116,7 +1121,7 @@ async def open_current_folder(message: Message, state: FSMContext):
         await message.answer(
             f"📁 <b>Текущая папка</b>\n\n"
             f"Папка: <code>{current_folder}</code>\n\n"
-            f"Не удалось получить ссылку на папку.",
+            f"❌ Не удалось получить ссылку на папку.",
             reply_markup=keyboard,
             parse_mode=ParseMode.HTML
         )
@@ -1124,12 +1129,17 @@ async def open_current_folder(message: Message, state: FSMContext):
 @router.message(F.text == "📂 Основная папка (Фото за МК)")
 async def open_base_folder(message: Message, state: FSMContext):
     """Обработчик открытия основной папки"""
-    keyboard = get_after_folder_selection_keyboard() if not user_has_uploaded_photos[message.from_user.id] else get_after_photos_keyboard()
+    # Определяем, какую клавиатуру показывать
+    user_id = message.from_user.id
+    if user_has_uploaded_photos[user_id]:
+        keyboard = get_after_photos_keyboard()
+    else:
+        keyboard = get_after_folder_selection_keyboard()
     
     await message.answer(
         f"📂 <b>Основная папка</b>\n\n"
         f"Папка: <code>{BASE_YANDEX_FOLDER}</code>\n\n"
-        f"<a href='{BASE_FOLDER_URL}'>Открыть в Яндекс.Диске</a>",
+        f"<a href='{BASE_FOLDER_URL}'>🔗 Открыть в Яндекс.Диске</a>",
         reply_markup=keyboard,
         parse_mode=ParseMode.HTML
     )
@@ -1137,12 +1147,42 @@ async def open_base_folder(message: Message, state: FSMContext):
 @router.message(F.text == "📂 Выбрать другую папку")
 async def choose_another_folder(message: Message, state: FSMContext):
     """Обработчик выбора другой папки"""
-    await show_folder_contents(message, disk_uploader.get_current_folder())
+    # Сбрасываем флаг загрузки фото при смене папки
+    user_id = message.from_user.id
+    user_has_uploaded_photos[user_id] = False
+    
+    await state.set_state(PhotoStates.choosing_folder)
+    await show_folder_contents(message, BASE_YANDEX_FOLDER)
 
 @router.message(F.text == "🏠 В главное меню")
 async def back_to_main_menu(message: Message, state: FSMContext):
     """Обработчик возврата в главное меню"""
+    # Сбрасываем состояние
+    user_id = message.from_user.id
     await state.clear()
+    
+    # Очищаем временные данные пользователя
+    if user_id in user_photo_data:
+        # Удаляем временные файлы
+        for photo_data in user_photo_data[user_id]:
+            temp_file_path = photo_data.get('temp_file_path')
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.remove(temp_file_path)
+                except:
+                    pass
+        user_photo_data[user_id] = []
+    
+    if user_id in user_album_data:
+        del user_album_data[user_id]
+    if user_id in user_batch_data:
+        del user_batch_data[user_id]
+    if user_id in user_text_data:
+        del user_text_data[user_id]
+    
+    # Сбрасываем флаг загрузки фото (чтобы пользователь мог начать заново)
+    user_has_uploaded_photos[user_id] = False
+    
     await send_welcome(message, state)
 
 @router.message(F.text == "📸 Загрузить фото")
@@ -1153,16 +1193,37 @@ async def start_photo_upload_after_folder(message: Message, state: FSMContext):
         return
     
     user_id = message.from_user.id
+    
+    # Проверяем, выбрана ли папка
+    current_folder = disk_uploader.get_current_folder()
+    if current_folder == BASE_YANDEX_FOLDER:
+        # Если выбрана основная папка, предлагаем создать свою
+        await message.answer(
+            "📸 <b>Загрузка фотографий</b>\n\n"
+            f"Текущая папка: <code>{current_folder}</code>\n\n"
+            "⚠️ <b>Внимание!</b> Вы загружаете фото в основную папку.\n"
+            "Рекомендуется создать свою личную папку для организации фото.\n\n"
+            "Вы можете:\n"
+            "• Продолжить загрузку в основную папку\n"
+            "• Создать новую папку (кнопка '➕ Создать папку')\n"
+            "• Выбрать другую папку (кнопка '📂 Выбрать другую папку')",
+            reply_markup=get_after_folder_selection_keyboard(),
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
     user_photo_data[user_id] = []
     user_batch_data[user_id] = {'mode': 'batch'}  # Режим пакетной загрузки
     
     await state.set_state(PhotoStates.processing_album)
     await message.answer(
         "📚 <b>Режим загрузки фотографий</b>\n\n"
+        f"📁 Папка для загрузки: <code>{current_folder}</code>\n\n"
         "Отправьте мне фотографии - можно выбрать сразу несколько в галерее!\n"
         "После отправки я покажу все полученные фото и спрошу, как их загрузить.\n\n"
-        "Или используйте /cancel для отмены (до загрузки фото).",
-        reply_markup=get_cancel_keyboard()
+        "Или используйте /cancel для отмены.",
+        reply_markup=get_cancel_keyboard(),
+        parse_mode=ParseMode.HTML
     )
 
 @router.message(F.text == "📸 Загрузить ещё фото")
