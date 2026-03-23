@@ -39,7 +39,7 @@ BACKUP_INTERVAL_HOURS = 24  # Интервал между бэкапами в ч
 BACKUP_RETENTION_DAYS = 30  # Хранить бэкапы 30 дней
 
 # URL с гайдом (можно загрузить на Google Drive, Яндекс.Диск и т.д.)
-GUIDE_URL = "https://disk.yandex.ru/i/C6TD6GXX0rb8FA"  # Замените на реальную ссылку
+GUIDE_URL = "https://disk.yandex.ru/i/1nzxVEriVKKYIg"  # Замените на реальную ссылку
 
 # Настройка логирования
 logging.basicConfig(
