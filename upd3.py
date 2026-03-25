@@ -62,6 +62,9 @@ class TextStates(StatesGroup):
     waiting_for_text = State()  # Ожидание текста для сохранения
     waiting_for_text_description = State()  # Ожидание описания для текста
 
+class ExportStates(StatesGroup):
+    waiting_for_user_selection = State()  # Ожидание выбора пользователя для экспорта
+
 # ========== EXCEL MANAGER ==========
 class ExcelManager:
     def __init__(self, filename: str = EXCEL_FILE):
@@ -207,6 +210,67 @@ class ExcelManager:
         """Экспортирует данные в файл для отправки"""
         return self.filename
     
+    def export_user_data(self, user_id: int) -> Optional[str]:
+        """Экспортирует данные конкретного пользователя в отдельный файл"""
+        try:
+            df = pd.read_excel(self.filename, sheet_name=EXCEL_SHEET)
+            user_df = df[df['User ID'] == user_id]
+            
+            if user_df.empty:
+                logger.warning(f"Нет данных для пользователя {user_id}")
+                return None
+            
+            # Получаем ФИО пользователя
+            user_fio = user_df['ФИО'].iloc[0] if not user_df['ФИО'].isna().all() else f"user_{user_id}"
+            
+            # Очищаем ФИО от недопустимых символов для имени файла
+            safe_fio = "".join(c for c in user_fio if c.isalnum() or c in (' ', '-', '_')).strip()
+            safe_fio = safe_fio.replace(' ', '_')
+            
+            # Создаем имя файла
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"export_{safe_fio}_{timestamp}.xlsx"
+            
+            # Создаем временную папку для экспортов
+            export_folder = "exports"
+            Path(export_folder).mkdir(exist_ok=True)
+            
+            filepath = os.path.join(export_folder, filename)
+            
+            # Сохраняем файл
+            user_df.to_excel(filepath, index=False, sheet_name=EXCEL_SHEET)
+            logger.info(f"Экспортированы данные пользователя {user_fio} (ID: {user_id}) в {filepath}")
+            
+            return filepath
+            
+        except Exception as e:
+            logger.error(f"Ошибка при экспорте данных пользователя: {e}")
+            return None
+    
+    def get_all_users(self) -> List[Dict]:
+        """Получает список всех пользователей с их данными"""
+        try:
+            df = pd.read_excel(self.filename, sheet_name=EXCEL_SHEET)
+            
+            users = []
+            for user_id in df['User ID'].unique():
+                user_df = df[df['User ID'] == user_id]
+                fio = user_df['ФИО'].iloc[0] if not user_df['ФИО'].isna().all() else "Не указано"
+                
+                users.append({
+                    'user_id': int(user_id),
+                    'fio': fio,
+                    'message_count': len(user_df),
+                    'first_message': user_df['Дата и время'].min(),
+                    'last_message': user_df['Дата и время'].max()
+                })
+            
+            return sorted(users, key=lambda x: x['fio'])
+            
+        except Exception as e:
+            logger.error(f"Ошибка при получении списка пользователей: {e}")
+            return []
+    
     def get_statistics(self) -> Dict:
         """Получает статистику по сообщениям"""
         try:
@@ -330,6 +394,12 @@ class YandexDiskUploader:
                 self.y.mkdir(backup_folder)
                 logger.info(f"Создана папка для бэкапов {backup_folder}")
             
+            # Создаем папку для экспортов
+            exports_folder = f"{BASE_YANDEX_FOLDER}/_exports"
+            if not self.y.exists(exports_folder):
+                self.y.mkdir(exports_folder)
+                logger.info(f"Создана папка для экспортов {exports_folder}")
+            
             logger.info("Яндекс.Диск подключен успешно")
             return True
         except Exception as e:
@@ -443,6 +513,36 @@ class YandexDiskUploader:
             logger.error(f"Ошибка загрузки бэкапа на Яндекс.Диск: {e}")
             return None
     
+    def upload_export_to_user_folder(self, local_path: str, user_fio: str) -> Optional[str]:
+        """Загружает экспорт данных пользователя в его папку на Яндекс.Диске"""
+        try:
+            # Очищаем ФИО для имени папки
+            safe_fio = "".join(c for c in user_fio if c.isalnum() or c in (' ', '-', '_')).strip()
+            safe_fio = safe_fio.replace(' ', '_')
+            
+            # Создаем папку пользователя если её нет
+            user_folder = f"{BASE_YANDEX_FOLDER}/{safe_fio}"
+            if not self.y.exists(user_folder):
+                self.y.mkdir(user_folder)
+                logger.info(f"Создана папка пользователя: {user_folder}")
+            
+            file_name = os.path.basename(local_path)
+            remote_path = f"{user_folder}/{file_name}"
+            
+            self.y.upload(local_path, remote_path)
+            logger.info(f"Экспорт загружен в папку пользователя: {remote_path}")
+            
+            # Получаем публичную ссылку
+            self.y.publish(remote_path)
+            resource = self.y.get_meta(remote_path)
+            public_url = resource.public_url
+            
+            return public_url
+            
+        except Exception as e:
+            logger.error(f"Ошибка загрузки экспорта в папку пользователя: {e}")
+            return None
+    
     def get_disk_info(self):
         """Получение информации о диске"""
         try:
@@ -496,6 +596,10 @@ Path(TEMP_FOLDER).mkdir(exist_ok=True)
 GUIDE_FOLDER = "guides"
 Path(GUIDE_FOLDER).mkdir(exist_ok=True)
 
+# Папка для экспортов
+EXPORT_FOLDER = "exports"
+Path(EXPORT_FOLDER).mkdir(exist_ok=True)
+
 # Хранилище для медиагрупп
 media_group_storage = defaultdict(list)
 
@@ -521,7 +625,11 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
         [
             KeyboardButton(text="📊 Показать данные"),
             KeyboardButton(text="📊 Статистика"),
-            KeyboardButton(text="💾 Управление бэкапами")
+            KeyboardButton(text="👤 Мои данные")
+        ],
+        [
+            KeyboardButton(text="💾 Управление бэкапами"),
+            KeyboardButton(text="📤 Экспорт пользователя")
         ],
         [
             KeyboardButton(text="❓ Помощь")
@@ -535,6 +643,33 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         input_field_placeholder="Выберите действие..."
     )
+
+def get_export_user_keyboard(users: List[Dict]) -> InlineKeyboardMarkup:
+    """Создает клавиатуру для выбора пользователя для экспорта"""
+    keyboard = []
+    
+    for user in users[:20]:  # Показываем не более 20 пользователей
+        display_name = user['fio'][:30] + "..." if len(user['fio']) > 30 else user['fio']
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"👤 {display_name} ({user['message_count']} сообщ.)",
+                callback_data=f"export_user:{user['user_id']}"
+            )
+        ])
+    
+    if len(users) > 20:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"📋 Всего пользователей: {len(users)} (показаны первые 20)",
+                callback_data="noop"
+            )
+        ])
+    
+    keyboard.append([
+        InlineKeyboardButton(text="🏠 В главное меню", callback_data="back_to_main_menu")
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_backup_keyboard() -> InlineKeyboardMarkup:
     """Создает клавиатуру для управления бэкапами"""
@@ -848,7 +983,7 @@ async def send_welcome(message: Message, state: FSMContext):
         "1. Сначала выбери папку для загрузки (можно создать новую или выбрать существующую)\n"
         "2. После выбора папки можно загрузить фотографии\n\n"
         "📝 <b>Текстовые сообщения:</b>\n"
-        "После загрузки фотографий тебе неоюходимо будет отправить название МК и его описание.\n"
+        "После загрузки фотографий тебе необходимо будет отправить название МК и его описание.\n"
         "Сначала нужно будет ввести своё ФИО, затем название мастер-класса, а затем его описание.\n"
         "Отменить этот процесс нельзя - нужно обязательно заполнить все поля.\n\n"
         "После отправки текста ты вернешься в главное меню.\n\n"
@@ -856,6 +991,9 @@ async def send_welcome(message: Message, state: FSMContext):
         f"• Автоматические бэкапы создаются каждые {BACKUP_INTERVAL_HOURS} часов\n"
         f"• Бэкапы хранятся {BACKUP_RETENTION_DAYS} дней\n"
         "• Используйте кнопку '💾 Управление бэкапами' для ручного управления\n\n"
+        "👤 <b>Экспорт данных:</b>\n"
+        "• '👤 Мои данные' - выгрузить ваши личные данные\n"
+        "• '📤 Экспорт пользователя' - выгрузить данные любого пользователя (доступно администратору)\n\n"
         "Помимо этого вы можете создать свою папку с помощью бота и туда выгружать фотографии (если не будет папки с вашей фамилией и именем).\n\n"
         "И помните: я слежу за вами.\n\n"
         "Счастливых голодных игр\n\n"
@@ -868,6 +1006,7 @@ async def send_welcome(message: Message, state: FSMContext):
         "/open_main - открыть основную папку\n"
         "/guide - открыть гайд по боту\n"
         "/export - выгрузить все данные в Excel\n"
+        "/export_me - выгрузить мои данные\n"
         "/stats - показать статистику\n"
         "/backup - управление бэкапами\n"
         "/cancel - отменить текущую операцию (до загрузки фото)"
@@ -930,7 +1069,9 @@ async def send_guide(message: Message, state: FSMContext):
                 "4. Введи его описание\n\n"
                 "<b>📊 Просмотр данных:</b>\n"
                 "• '📊 Показать данные' - выгрузить Excel файл со всеми записями\n"
-                "• '📊 Статистика' - показать статистику по всем сообщениям\n\n"
+                "• '📊 Статистика' - показать статистику по всем сообщениям\n"
+                "• '👤 Мои данные' - выгрузить только ваши данные\n"
+                "• '📤 Экспорт пользователя' - выгрузить данные другого пользователя\n\n"
                 "<b>💾 Управление бэкапами:</b>\n"
                 "• '💾 Управление бэкапами' - создать бэкап, просмотреть список, очистить старые\n"
                 f"• Автоматические бэкапы создаются каждые {BACKUP_INTERVAL_HOURS} часов\n"
@@ -959,6 +1100,207 @@ async def send_guide(message: Message, state: FSMContext):
             "Пожалуйста, попробуйте позже или обратитесь к администратору.",
             reply_markup=get_main_keyboard()
         )
+
+@router.message(Command("export_me"))
+@router.message(F.text == "👤 Мои данные")
+async def export_my_data(message: Message, state: FSMContext):
+    """Экспорт данных текущего пользователя"""
+    user_id = message.from_user.id
+    
+    status_msg = await message.answer("⏳ Подготавливаю ваши данные...")
+    
+    try:
+        # Получаем данные пользователя
+        user_messages = excel_manager.get_user_messages(user_id)
+        
+        if not user_messages:
+            await status_msg.edit_text(
+                "📊 <b>Нет данных для экспорта</b>\n\n"
+                "У вас пока нет сохраненных сообщений.\n"
+                "Сначала загрузите фото и отправьте текст.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_main_keyboard()
+            )
+            return
+        
+        # Получаем ФИО пользователя
+        fio = user_fio_data.get(user_id, "Не указано")
+        for msg in user_messages:
+            if msg.get('ФИО') and msg['ФИО'] != "Не указано":
+                fio = msg['ФИО']
+                break
+        
+        # Создаем файл экспорта
+        export_path = excel_manager.export_user_data(user_id)
+        
+        if export_path and os.path.exists(export_path):
+            # Отправляем файл пользователю
+            document = FSInputFile(export_path)
+            
+            await status_msg.delete()
+            await message.answer_document(
+                document,
+                caption=f"👤 <b>Ваши данные</b>\n\n"
+                        f"ФИО: <code>{fio}</code>\n"
+                        f"Всего записей: {len(user_messages)}\n"
+                        f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                        f"📁 Файл сохранен в папку: <code>/{BASE_YANDEX_FOLDER}/{fio.replace(' ', '_')}/</code>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_main_keyboard()
+            )
+            
+            # Загружаем на Яндекс.Диск
+            if disk_uploader:
+                public_url = disk_uploader.upload_export_to_user_folder(export_path, fio)
+                if public_url:
+                    await message.answer(
+                        f"🔗 <b>Ссылка на файл на Яндекс.Диске:</b>\n"
+                        f"<a href='{public_url}'>Открыть файл</a>",
+                        parse_mode=ParseMode.HTML
+                    )
+            
+            # Удаляем временный файл
+            try:
+                os.remove(export_path)
+            except:
+                pass
+            
+            logger.info(f"Экспортированы данные пользователя {user_id} (ФИО: {fio})")
+        else:
+            await status_msg.edit_text(
+                "❌ Ошибка при экспорте данных.",
+                reply_markup=get_main_keyboard()
+            )
+            
+    except Exception as e:
+        logger.error(f"Ошибка при экспорте данных пользователя: {e}")
+        await status_msg.edit_text(
+            "❌ Ошибка при экспорте данных.",
+            reply_markup=get_main_keyboard()
+        )
+
+@router.message(F.text == "📤 Экспорт пользователя")
+async def export_user_data(message: Message, state: FSMContext):
+    """Экспорт данных выбранного пользователя (административная функция)"""
+    # Проверяем, является ли пользователь администратором
+    # Можно добавить список ID администраторов
+    ADMIN_IDS = [2138391498]  # Замените на реальные ID администраторов
+    
+    user_id = message.from_user.id
+    
+    if user_id not in ADMIN_IDS:
+        await message.answer(
+            "🔒 <b>Доступ ограничен</b>\n\n"
+            "Эта функция доступна только администраторам бота.\n"
+            "Для экспорта своих данных используйте кнопку '👤 Мои данные'.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_keyboard()
+        )
+        return
+    
+    # Получаем список всех пользователей
+    users = excel_manager.get_all_users()
+    
+    if not users:
+        await message.answer(
+            "📊 <b>Нет пользователей для экспорта</b>\n\n"
+            "Пока нет сохраненных данных.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_keyboard()
+        )
+        return
+    
+    # Показываем клавиатуру с выбором пользователя
+    await message.answer(
+        "👥 <b>Выберите пользователя для экспорта данных</b>\n\n"
+        f"Всего пользователей: {len(users)}\n\n"
+        "Выберите из списка ниже:",
+        reply_markup=get_export_user_keyboard(users),
+        parse_mode=ParseMode.HTML
+    )
+    
+    await state.set_state(ExportStates.waiting_for_user_selection)
+
+@router.callback_query(lambda c: c.data.startswith('export_user:'))
+async def export_selected_user_callback(callback_query: CallbackQuery, state: FSMContext):
+    """Обработчик экспорта данных выбранного пользователя"""
+    await callback_query.answer()
+    
+    try:
+        target_user_id = int(callback_query.data.split(':')[1])
+        
+        await callback_query.message.edit_text("⏳ Подготавливаю данные пользователя...")
+        
+        # Получаем данные пользователя
+        user_messages = excel_manager.get_user_messages(target_user_id)
+        
+        if not user_messages:
+            await callback_query.message.edit_text(
+                "❌ Нет данных для этого пользователя.",
+                reply_markup=get_main_keyboard()
+            )
+            await state.clear()
+            return
+        
+        # Получаем ФИО пользователя
+        fio = "Не указано"
+        for msg in user_messages:
+            if msg.get('ФИО') and msg['ФИО'] != "Не указано":
+                fio = msg['ФИО']
+                break
+        
+        # Создаем файл экспорта
+        export_path = excel_manager.export_user_data(target_user_id)
+        
+        if export_path and os.path.exists(export_path):
+            # Отправляем файл администратору
+            document = FSInputFile(export_path)
+            
+            await callback_query.message.delete()
+            await callback_query.message.answer_document(
+                document,
+                caption=f"👤 <b>Данные пользователя</b>\n\n"
+                        f"ФИО: <code>{fio}</code>\n"
+                        f"User ID: <code>{target_user_id}</code>\n"
+                        f"Всего записей: {len(user_messages)}\n"
+                        f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                        f"📁 Файл сохранен в папку: <code>/{BASE_YANDEX_FOLDER}/{fio.replace(' ', '_')}/</code>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_main_keyboard()
+            )
+            
+            # Загружаем на Яндекс.Диск
+            if disk_uploader:
+                public_url = disk_uploader.upload_export_to_user_folder(export_path, fio)
+                if public_url:
+                    await callback_query.message.answer(
+                        f"🔗 <b>Ссылка на файл на Яндекс.Диске:</b>\n"
+                        f"<a href='{public_url}'>Открыть файл</a>",
+                        parse_mode=ParseMode.HTML
+                    )
+            
+            # Удаляем временный файл
+            try:
+                os.remove(export_path)
+            except:
+                pass
+            
+            logger.info(f"Экспортированы данные пользователя {target_user_id} (ФИО: {fio})")
+        else:
+            await callback_query.message.edit_text(
+                "❌ Ошибка при экспорте данных.",
+                reply_markup=get_main_keyboard()
+            )
+        
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"Ошибка при экспорте данных пользователя: {e}")
+        await callback_query.message.edit_text(
+            "❌ Ошибка при экспорте данных.",
+            reply_markup=get_main_keyboard()
+        )
+        await state.clear()
 
 @router.callback_query(lambda c: c.data == "download_guide")
 async def download_guide_callback(callback_query: CallbackQuery):
@@ -1403,7 +1745,7 @@ async def export_data(message: Message, state: FSMContext):
         document = FSInputFile(temp_file)
         await message.answer_document(
             document,
-            caption=f"📊 <b>Экспорт данных</b>\n\n"
+            caption=f"📊 <b>Экспорт всех данных</b>\n\n"
                     f"Всего записей: {len(messages)}\n"
                     f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
             parse_mode=ParseMode.HTML
