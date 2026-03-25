@@ -223,13 +223,13 @@ class ExcelManager:
             # Получаем ФИО пользователя
             user_fio = user_df['ФИО'].iloc[0] if not user_df['ФИО'].isna().all() else f"user_{user_id}"
             
-            # Очищаем ФИО от недопустимых символов для имени файла
+            # Очищаем ФИО для имени файла
             safe_fio = "".join(c for c in user_fio if c.isalnum() or c in (' ', '-', '_')).strip()
             safe_fio = safe_fio.replace(' ', '_')
             
-            # Создаем имя файла
+            # Создаем имя файла с датой
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"export_{safe_fio}_{timestamp}.xlsx"
+            filename = f"{safe_fio}_data_{timestamp}.xlsx"
             
             # Создаем временную папку для экспортов
             export_folder = "exports"
@@ -241,11 +241,11 @@ class ExcelManager:
             user_df.to_excel(filepath, index=False, sheet_name=EXCEL_SHEET)
             logger.info(f"Экспортированы данные пользователя {user_fio} (ID: {user_id}) в {filepath}")
             
-            return filepath
+            return filepath, user_fio
             
         except Exception as e:
             logger.error(f"Ошибка при экспорте данных пользователя: {e}")
-            return None
+            return None, None
     
     def get_all_users(self) -> List[Dict]:
         """Получает список всех пользователей с их данными"""
@@ -514,20 +514,31 @@ class YandexDiskUploader:
             return None
     
     def upload_export_to_user_folder(self, local_path: str, user_fio: str) -> Optional[str]:
-        """Загружает экспорт данных пользователя в его папку на Яндекс.Диске"""
+        """Загружает экспорт данных пользователя в его существующую папку на Яндекс.Диске"""
         try:
             # Очищаем ФИО для имени папки
             safe_fio = "".join(c for c in user_fio if c.isalnum() or c in (' ', '-', '_')).strip()
             safe_fio = safe_fio.replace(' ', '_')
             
-            # Создаем папку пользователя если её нет
+            # Путь к папке пользователя (не создаем новую, если её нет)
             user_folder = f"{BASE_YANDEX_FOLDER}/{safe_fio}"
+            
+            # Проверяем, существует ли папка пользователя
             if not self.y.exists(user_folder):
-                self.y.mkdir(user_folder)
-                logger.info(f"Создана папка пользователя: {user_folder}")
+                logger.warning(f"Папка пользователя {user_folder} не существует, экспорт будет загружен в папку _exports")
+                user_folder = f"{BASE_YANDEX_FOLDER}/_exports"
+                if not self.y.exists(user_folder):
+                    self.y.mkdir(user_folder)
             
             file_name = os.path.basename(local_path)
             remote_path = f"{user_folder}/{file_name}"
+            
+            # Если файл с таким именем уже существует, добавляем timestamp
+            if self.y.exists(remote_path):
+                name, ext = os.path.splitext(file_name)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                file_name = f"{name}_{timestamp}{ext}"
+                remote_path = f"{user_folder}/{file_name}"
             
             self.y.upload(local_path, remote_path)
             logger.info(f"Экспорт загружен в папку пользователя: {remote_path}")
@@ -537,11 +548,11 @@ class YandexDiskUploader:
             resource = self.y.get_meta(remote_path)
             public_url = resource.public_url
             
-            return public_url
+            return public_url, user_folder
             
         except Exception as e:
             logger.error(f"Ошибка загрузки экспорта в папку пользователя: {e}")
-            return None
+            return None, None
     
     def get_disk_info(self):
         """Получение информации о диске"""
@@ -1130,33 +1141,51 @@ async def export_my_data(message: Message, state: FSMContext):
                 break
         
         # Создаем файл экспорта
-        export_path = excel_manager.export_user_data(user_id)
+        export_path, user_fio = excel_manager.export_user_data(user_id)
         
         if export_path and os.path.exists(export_path):
             # Отправляем файл пользователю
             document = FSInputFile(export_path)
             
             await status_msg.delete()
-            await message.answer_document(
-                document,
-                caption=f"👤 <b>Ваши данные</b>\n\n"
-                        f"ФИО: <code>{fio}</code>\n"
-                        f"Всего записей: {len(user_messages)}\n"
-                        f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-                        f"📁 Файл сохранен в папку: <code>/{BASE_YANDEX_FOLDER}/{fio.replace(' ', '_')}/</code>",
-                parse_mode=ParseMode.HTML,
-                reply_markup=get_main_keyboard()
-            )
             
-            # Загружаем на Яндекс.Диск
+            # Загружаем в папку пользователя на Яндекс.Диске
+            folder_path = None
             if disk_uploader:
-                public_url = disk_uploader.upload_export_to_user_folder(export_path, fio)
+                public_url, folder_path = disk_uploader.upload_export_to_user_folder(export_path, fio)
                 if public_url:
-                    await message.answer(
-                        f"🔗 <b>Ссылка на файл на Яндекс.Диске:</b>\n"
-                        f"<a href='{public_url}'>Открыть файл</a>",
-                        parse_mode=ParseMode.HTML
+                    await message.answer_document(
+                        document,
+                        caption=f"👤 <b>Ваши данные</b>\n\n"
+                                f"ФИО: <code>{fio}</code>\n"
+                                f"Всего записей: {len(user_messages)}\n"
+                                f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                                f"📁 Файл сохранен в папку: <code>{folder_path}</code>\n"
+                                f"🔗 <a href='{public_url}'>Открыть файл на Яндекс.Диске</a>",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=get_main_keyboard()
                     )
+                else:
+                    await message.answer_document(
+                        document,
+                        caption=f"👤 <b>Ваши данные</b>\n\n"
+                                f"ФИО: <code>{fio}</code>\n"
+                                f"Всего записей: {len(user_messages)}\n"
+                                f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                                f"❌ Не удалось загрузить файл на Яндекс.Диск.",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=get_main_keyboard()
+                    )
+            else:
+                await message.answer_document(
+                    document,
+                    caption=f"👤 <b>Ваши данные</b>\n\n"
+                            f"ФИО: <code>{fio}</code>\n"
+                            f"Всего записей: {len(user_messages)}\n"
+                            f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=get_main_keyboard()
+                )
             
             # Удаляем временный файл
             try:
@@ -1247,34 +1276,55 @@ async def export_selected_user_callback(callback_query: CallbackQuery, state: FS
                 break
         
         # Создаем файл экспорта
-        export_path = excel_manager.export_user_data(target_user_id)
+        export_path, user_fio = excel_manager.export_user_data(target_user_id)
         
         if export_path and os.path.exists(export_path):
             # Отправляем файл администратору
             document = FSInputFile(export_path)
             
             await callback_query.message.delete()
-            await callback_query.message.answer_document(
-                document,
-                caption=f"👤 <b>Данные пользователя</b>\n\n"
-                        f"ФИО: <code>{fio}</code>\n"
-                        f"User ID: <code>{target_user_id}</code>\n"
-                        f"Всего записей: {len(user_messages)}\n"
-                        f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-                        f"📁 Файл сохранен в папку: <code>/{BASE_YANDEX_FOLDER}/{fio.replace(' ', '_')}/</code>",
-                parse_mode=ParseMode.HTML,
-                reply_markup=get_main_keyboard()
-            )
             
-            # Загружаем на Яндекс.Диск
+            # Загружаем в папку пользователя на Яндекс.Диске
+            folder_path = None
             if disk_uploader:
-                public_url = disk_uploader.upload_export_to_user_folder(export_path, fio)
+                public_url, folder_path = disk_uploader.upload_export_to_user_folder(export_path, fio)
                 if public_url:
-                    await callback_query.message.answer(
-                        f"🔗 <b>Ссылка на файл на Яндекс.Диске:</b>\n"
-                        f"<a href='{public_url}'>Открыть файл</a>",
-                        parse_mode=ParseMode.HTML
+                    await callback_query.message.answer_document(
+                        document,
+                        caption=f"👤 <b>Данные пользователя</b>\n\n"
+                                f"ФИО: <code>{fio}</code>\n"
+                                f"User ID: <code>{target_user_id}</code>\n"
+                                f"Всего записей: {len(user_messages)}\n"
+                                f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                                f"📁 Файл сохранен в папку: <code>{folder_path}</code>\n"
+                                f"🔗 <a href='{public_url}'>Открыть файл на Яндекс.Диске</a>",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=get_main_keyboard()
                     )
+                else:
+                    await callback_query.message.answer_document(
+                        document,
+                        caption=f"👤 <b>Данные пользователя</b>\n\n"
+                                f"ФИО: <code>{fio}</code>\n"
+                                f"User ID: <code>{target_user_id}</code>\n"
+                                f"Всего записей: {len(user_messages)}\n"
+                                f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                                f"❌ Не удалось загрузить файл на Яндекс.Диск.\n"
+                                f"Папка пользователя не найдена.",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=get_main_keyboard()
+                    )
+            else:
+                await callback_query.message.answer_document(
+                    document,
+                    caption=f"👤 <b>Данные пользователя</b>\n\n"
+                            f"ФИО: <code>{fio}</code>\n"
+                            f"User ID: <code>{target_user_id}</code>\n"
+                            f"Всего записей: {len(user_messages)}\n"
+                            f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=get_main_keyboard()
+                )
             
             # Удаляем временный файл
             try:
