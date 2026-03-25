@@ -1118,8 +1118,7 @@ async def export_my_data(message: Message, state: FSMContext):
                 "📊 <b>Нет данных для экспорта</b>\n\n"
                 "У вас пока нет сохраненных сообщений.\n"
                 "Сначала загрузите фото и отправьте текст.",
-                parse_mode=ParseMode.HTML,
-                reply_markup=get_main_keyboard()
+                parse_mode=ParseMode.HTML
             )
             return
         
@@ -1169,21 +1168,20 @@ async def export_my_data(message: Message, state: FSMContext):
         else:
             await status_msg.edit_text(
                 "❌ Ошибка при экспорте данных.",
-                reply_markup=get_main_keyboard()
+                parse_mode=ParseMode.HTML
             )
             
     except Exception as e:
         logger.error(f"Ошибка при экспорте данных пользователя: {e}")
         await status_msg.edit_text(
             "❌ Ошибка при экспорте данных.",
-            reply_markup=get_main_keyboard()
+            parse_mode=ParseMode.HTML
         )
 
 @router.message(F.text == "📤 Экспорт пользователя")
 async def export_user_data(message: Message, state: FSMContext):
     """Экспорт данных выбранного пользователя (административная функция)"""
     # Проверяем, является ли пользователь администратором
-    # Можно добавить список ID администраторов
     ADMIN_IDS = [2138391498]  # Замените на реальные ID администраторов
     
     user_id = message.from_user.id
@@ -1236,8 +1234,7 @@ async def export_selected_user_callback(callback_query: CallbackQuery, state: FS
         
         if not user_messages:
             await callback_query.message.edit_text(
-                "❌ Нет данных для этого пользователя.",
-                reply_markup=get_main_keyboard()
+                "❌ Нет данных для этого пользователя."
             )
             await state.clear()
             return
@@ -1288,8 +1285,7 @@ async def export_selected_user_callback(callback_query: CallbackQuery, state: FS
             logger.info(f"Экспортированы данные пользователя {target_user_id} (ФИО: {fio})")
         else:
             await callback_query.message.edit_text(
-                "❌ Ошибка при экспорте данных.",
-                reply_markup=get_main_keyboard()
+                "❌ Ошибка при экспорте данных."
             )
         
         await state.clear()
@@ -1297,8 +1293,7 @@ async def export_selected_user_callback(callback_query: CallbackQuery, state: FS
     except Exception as e:
         logger.error(f"Ошибка при экспорте данных пользователя: {e}")
         await callback_query.message.edit_text(
-            "❌ Ошибка при экспорте данных.",
-            reply_markup=get_main_keyboard()
+            "❌ Ошибка при экспорте данных."
         )
         await state.clear()
 
