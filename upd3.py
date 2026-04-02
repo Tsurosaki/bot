@@ -61,7 +61,6 @@ class TextStates(StatesGroup):
     waiting_for_fio = State()  # Ожидание ввода ФИО
     waiting_for_text = State()  # Ожидание текста для сохранения
     waiting_for_text_description = State()  # Ожидание описания для текста
-    skip_text_confirmation = State()  # Подтверждение пропуска текста
 
 class ExportStates(StatesGroup):
     waiting_for_user_selection = State()  # Ожидание выбора пользователя для экспорта
@@ -149,8 +148,8 @@ class ExcelManager:
                 user_id,
                 username,
                 fio,
-                text if text else "Без текста",
-                description if description else "Без описания",
+                text,
+                description,
                 msg_type
             ])
             
@@ -644,6 +643,7 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
             KeyboardButton(text="📤 Экспорт пользователя")
         ],
         [
+            KeyboardButton(text="📝 Отправить текст"),
             KeyboardButton(text="❓ Помощь")
         ],
         [
@@ -657,31 +657,14 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
     )
 
 def get_after_photos_keyboard() -> ReplyKeyboardMarkup:
-    """Создает клавиатуру после загрузки фото (с возможностью пропуска текста)"""
+    """Создает клавиатуру после загрузки фото"""
     keyboard = [
         [
             KeyboardButton(text="📸 Загрузить ещё фото"),
-            KeyboardButton(text="📝 Отправить текст")
-        ],
-        [
-            KeyboardButton(text="⏭️ Пропустить текст (завершить)")
+            KeyboardButton(text="📝 Отправить текст сейчас")
         ],
         [
             KeyboardButton(text="🏠 В главное меню")
-        ]
-    ]
-    return ReplyKeyboardMarkup(
-        keyboard=keyboard,
-        resize_keyboard=True,
-        input_field_placeholder="Выберите действие..."
-    )
-
-def get_skip_text_confirmation_keyboard() -> ReplyKeyboardMarkup:
-    """Создает клавиатуру для подтверждения пропуска текста"""
-    keyboard = [
-        [
-            KeyboardButton(text="✅ Да, пропустить"),
-            KeyboardButton(text="❌ Нет, ввести текст")
         ]
     ]
     return ReplyKeyboardMarkup(
@@ -998,7 +981,7 @@ user_text_data = defaultdict(dict)  # Для хранения текстовых
 user_fio_data = defaultdict(str)  # Для хранения ФИО пользователя
 user_has_uploaded_photos = defaultdict(bool)  # Флаг, загружал ли пользователь фото
 user_has_sent_text = defaultdict(bool)  # Флаг, отправлял ли пользователь текст
-user_skip_text_requested = defaultdict(bool)  # Флаг, запросил ли пользователь пропуск текста
+user_can_send_text = defaultdict(bool)  # Флаг, может ли пользователь отправить текст (есть загруженные фото)
 
 @router.message(Command("start", "help"))
 @router.message(F.text == "🏠 Стартуем")
@@ -1011,14 +994,14 @@ async def send_welcome(message: Message, state: FSMContext):
     welcome_text = (
         "🏠 <b>Бот для загрузки фото с МК в Яндекс.Диск</b>\n\n"
         "Я вас категорически приветствую, молодые люди (или уже не молодые).\n\n"
-        "Этот бот был создан, чтобы загружать в него фотографии с мастер-классов, которые сразу будут загружены в Яндекс.Диск (облегчил жизнь для вас, так скажем).\n"
+        "Этот бот был создан, чтобы загружать в него фотографии с мастер-классов, которые сразу будут загружены в Яндекс.Диск.\n"
         "📸 <b>Порядок работы с фотографиями:</b>\n"
         "1. Сначала выбери папку для загрузки (можно создать новую или выбрать существующую)\n"
         "2. После выбора папки можно загрузить фотографии\n\n"
-        "📝 <b>Текстовые сообщения (опционально):</b>\n"
-        "После загрузки фотографий ты можешь отправить текст с описанием МК.\n"
-        "Для этого нажми '📝 Отправить текст'.\n"
-        "Если не хочешь отправлять текст, нажми '⏭️ Пропустить текст (завершить)'.\n\n"
+        "📝 <b>Текстовые сообщения:</b>\n"
+        "После загрузки фотографий ты можешь отправить текст с описанием МК в любое удобное время.\n"
+        "Для этого нажми кнопку '📝 Отправить текст' в главном меню.\n"
+        "Текст не обязательно отправлять сразу - можно сделать это позже.\n\n"
         "💾 <b>Резервное копирование:</b>\n"
         f"• Автоматические бэкапы создаются каждые {BACKUP_INTERVAL_HOURS} часов\n"
         f"• Бэкапы хранятся {BACKUP_RETENTION_DAYS} дней\n"
@@ -1026,7 +1009,7 @@ async def send_welcome(message: Message, state: FSMContext):
         "👤 <b>Экспорт данных:</b>\n"
         "• '👤 Мои данные' - выгрузить ваши личные данные\n"
         "• '📤 Экспорт пользователя' - выгрузить данные любого пользователя (доступно администратору)\n\n"
-        "Помимо этого вы можете создать свою папку с помощью бота и туда выгружать фотографии (если не будет папки с вашей фамилией и именем).\n\n"
+        "Помимо этого вы можете создать свою папку с помощью бота и туда выгружать фотографии.\n\n"
         "И помните: я слежу за вами.\n\n"
         "Счастливых голодных игр\n\n"
         f"📁 Основная папка: <code>{BASE_YANDEX_FOLDER}</code>\n"
@@ -1041,7 +1024,7 @@ async def send_welcome(message: Message, state: FSMContext):
         "/export_me - выгрузить мои данные\n"
         "/stats - показать статистику\n"
         "/backup - управление бэкапами\n"
-        "/cancel - отменить текущую операцию (до загрузки фото)"
+        "/cancel - отменить текущую операцию"
     )
     await message.answer(welcome_text, reply_markup=get_main_keyboard(), parse_mode=ParseMode.HTML)
 
@@ -1094,12 +1077,12 @@ async def send_guide(message: Message, state: FSMContext):
                 "6. Выбери способ именования файлов:\n"
                 "   • '📝 Дать название каждому' - ввести название для каждого фото\n"
                 "   • '🔄 Все с автоназваниями' - автоматические названия\n\n"
-                "<b>📝 Отправка текста (опционально):</b>\n"
-                "1. После загрузки фото нажми '📝 Отправить текст'\n"
+                "<b>📝 Отправка текста:</b>\n"
+                "1. После загрузки фото нажми '📝 Отправить текст' в главном меню\n"
                 "2. Введи ваше ФИО\n"
                 "3. Введи название МК\n"
                 "4. Введи его описание\n"
-                "5. Или нажми '⏭️ Пропустить текст (завершить)' чтобы завершить без текста\n\n"
+                "Текст можно отправить в любое время после загрузки фото.\n\n"
                 "<b>📊 Просмотр данных:</b>\n"
                 "• '📊 Показать данные' - выгрузить Excel файл со всеми записями\n"
                 "• '📊 Статистика' - показать статистику по всем сообщениям\n"
@@ -1559,7 +1542,7 @@ async def choose_another_folder(message: Message, state: FSMContext):
     # Сбрасываем флаг загрузки фото при смене папки
     user_id = message.from_user.id
     user_has_uploaded_photos[user_id] = False
-    user_skip_text_requested[user_id] = False
+    user_can_send_text[user_id] = False
     
     await state.set_state(PhotoStates.choosing_folder)
     await show_folder_contents(message, BASE_YANDEX_FOLDER)
@@ -1592,7 +1575,6 @@ async def back_to_main_menu(message: Message, state: FSMContext):
     
     # Сбрасываем флаги
     user_has_uploaded_photos[user_id] = False
-    user_skip_text_requested[user_id] = False
     
     await send_welcome(message, state)
 
@@ -1640,83 +1622,27 @@ async def start_photo_upload_after_folder(message: Message, state: FSMContext):
 @router.message(F.text == "📸 Загрузить ещё фото")
 async def start_photo_upload_again(message: Message, state: FSMContext):
     """Начало загрузки ещё фото после предыдущей загрузки"""
-    user_id = message.from_user.id
-    user_skip_text_requested[user_id] = False
     await start_photo_upload_after_folder(message, state)
 
-@router.message(F.text == "⏭️ Пропустить текст (завершить)")
-async def skip_text_request(message: Message, state: FSMContext):
-    """Запрос на пропуск ввода текста"""
-    user_id = message.from_user.id
-    
-    if not user_has_uploaded_photos[user_id]:
-        await message.answer(
-            "❌ <b>Нет загруженных фото для завершения</b>\n\n"
-            "Сначала загрузите хотя бы одну фотографию.",
-            reply_markup=get_after_folder_selection_keyboard(),
-            parse_mode=ParseMode.HTML
-        )
-        return
-    
-    await state.set_state(TextStates.skip_text_confirmation)
-    await message.answer(
-        "⚠️ <b>Вы уверены, что хотите пропустить ввод текста?</b>\n\n"
-        "В этом случае информация о мастер-классе не будет сохранена в Excel.\n"
-        "Будут сохранены только загруженные фотографии.\n\n"
-        "Выберите действие:",
-        reply_markup=get_skip_text_confirmation_keyboard(),
-        parse_mode=ParseMode.HTML
-    )
-
-@router.message(TextStates.skip_text_confirmation, F.text == "✅ Да, пропустить")
-async def confirm_skip_text(message: Message, state: FSMContext):
-    """Подтверждение пропуска текста"""
-    user_id = message.from_user.id
-    
-    # Сохраняем запись о том, что пользователь пропустил текст
-    user_skip_text_requested[user_id] = True
-    
-    # Сбрасываем флаг загрузки фото, чтобы можно было начать заново
-    user_has_uploaded_photos[user_id] = False
-    
-    await state.clear()
-    await message.answer(
-        "✅ <b>Операция завершена!</b>\n\n"
-        "Фотографии успешно загружены.\n"
-        "Текст не был сохранен.\n\n"
-        "Возвращаемся в главное меню.",
-        reply_markup=get_main_keyboard(),
-        parse_mode=ParseMode.HTML
-    )
-
-@router.message(TextStates.skip_text_confirmation, F.text == "❌ Нет, ввести текст")
-async def cancel_skip_text(message: Message, state: FSMContext):
-    """Отмена пропуска текста - возврат к вводу"""
-    await state.set_state(TextStates.waiting_for_fio)
-    await message.answer(
-        "📝 <b>Введите ваше ФИО</b>\n\n"
-        "Пожалуйста, введи свои Фамилию, Имя и Отчество полностью.\n"
-        "Пример: <code>Иванов Иван Иванович</code>\n\n"
-        "Это нужно для идентификации в таблице.\n\n"
-        "<b>Внимание! Отменить этот процесс нельзя.</b>",
-        reply_markup=ReplyKeyboardRemove(),
-        parse_mode=ParseMode.HTML
-    )
-
 @router.message(F.text == "📝 Отправить текст")
+@router.message(F.text == "📝 Отправить текст сейчас")
 async def start_text_input(message: Message, state: FSMContext):
-    """Начало ввода текста (только после загрузки фото)"""
+    """Начало ввода текста (можно отправить в любое время после загрузки фото)"""
     user_id = message.from_user.id
     
     # Проверяем, загружал ли пользователь фото
-    if not user_has_uploaded_photos[user_id]:
-        await message.answer(
-            "❌ <b>Текст можно отправить только после загрузки фотографий!</b>\n\n"
-            "Сначала загрузи хотя бы одну фотографию, а затем возвращайся к отправке текста.",
-            reply_markup=get_after_folder_selection_keyboard(),
-            parse_mode=ParseMode.HTML
-        )
-        return
+    if not user_can_send_text[user_id] and not user_has_uploaded_photos[user_id]:
+        # Проверяем наличие записей в Excel
+        user_messages = excel_manager.get_user_messages(user_id)
+        if not user_messages:
+            await message.answer(
+                "❌ <b>Текст можно отправить только после загрузки фотографий!</b>\n\n"
+                "Сначала загрузи хотя бы одну фотографию.\n"
+                "Для загрузки фото выбери папку и нажми '📸 Загрузить фото'.",
+                reply_markup=get_main_keyboard(),
+                parse_mode=ParseMode.HTML
+            )
+            return
     
     # Убираем клавиатуру - пользователь должен вводить текст
     await state.set_state(TextStates.waiting_for_fio)
@@ -1727,6 +1653,23 @@ async def start_text_input(message: Message, state: FSMContext):
         "Это нужно для идентификации в таблице.\n\n"
         "<b>Внимание! Отменить этот процесс нельзя.</b>",
         reply_markup=ReplyKeyboardRemove(),
+        parse_mode=ParseMode.HTML
+    )
+
+@router.message(F.text == "🏠 В главное меню")
+async def back_to_main_menu_from_photos(message: Message, state: FSMContext):
+    """Возврат в главное меню после загрузки фото"""
+    user_id = message.from_user.id
+    await state.clear()
+    
+    # Сохраняем возможность отправить текст позже
+    user_can_send_text[user_id] = True
+    
+    await message.answer(
+        "✅ <b>Фотографии загружены!</b>\n\n"
+        "Ты можешь отправить текст с описанием МК в любое удобное время.\n"
+        "Для этого нажми кнопку '📝 Отправить текст' в главном меню.",
+        reply_markup=get_main_keyboard(),
         parse_mode=ParseMode.HTML
     )
 
@@ -1794,7 +1737,7 @@ async def process_text_input(message: Message, state: FSMContext):
         f"✅ Текст получен:\n\n<code>{text[:100]}{'...' if len(text) > 100 else ''}</code>\n\n"
         "📝 <b>Теперь введи описание МК</b>\n\n"
         "Описание обязательно для сохранения.\n"
-        "Например: 'На мастер-классе было разобрано следующее: кто такой предприниматель, как создаётся бизнес, и то, как определить реальность проблемы. Участники хорошо усвоили материал и теперь они готовы общаться со всоей ЦА для выявления проблем'\n\n"
+        "Например: 'На мастер-классе было разобрано следующее: кто такой предприниматель, как создаётся бизнес, и то, как определить реальность проблемы. Участники хорошо усвоили материал и теперь они готовы общаться со своей ЦА для выявления проблем'\n\n"
         "<b>После ввода описания данные будут сохранены.</b>",
         reply_markup=ReplyKeyboardRemove(),
         parse_mode=ParseMode.HTML
@@ -1824,8 +1767,9 @@ async def process_text_description(message: Message, state: FSMContext):
         )
         
         if success:
-            # Устанавливаем флаг, что пользователь отправил текст
+            # Устанавливаем флаги
             user_has_sent_text[user_id] = True
+            user_can_send_text[user_id] = False
             
             await message.answer(
                 f"✅ <b>Текст успешно сохранен в Excel!</b>\n\n"
@@ -1844,8 +1788,6 @@ async def process_text_description(message: Message, state: FSMContext):
         
         # Очищаем временные данные
         del user_text_data[user_id]
-        # Сбрасываем флаг загрузки фото
-        user_has_uploaded_photos[user_id] = False
         await state.clear()
     else:
         await message.answer("❌ Данные не найдены. Начните заново.")
@@ -2215,8 +2157,9 @@ async def upload_all_batch_with_autonames(message: Message, state: FSMContext):
         
         user_photo_data[user_id].pop(0)
     
-    # Устанавливаем флаг, что пользователь загрузил фото
+    # Устанавливаем флаги
     user_has_uploaded_photos[user_id] = True
+    user_can_send_text[user_id] = True
     
     current_folder = disk_uploader.get_current_folder()
     
@@ -2235,11 +2178,11 @@ async def upload_all_batch_with_autonames(message: Message, state: FSMContext):
             result_text += f"Не удалось загрузить: {', '.join(failed_files[:3])}\n"
     
     result_text += f"\n📂 <a href='{BASE_FOLDER_URL}'>Основная папка (Фото за МК)</a>\n\n"
-    result_text += "Что делаем дальше?"
+    result_text += "Ты можешь отправить текст с описанием МК позже, нажав кнопку '📝 Отправить текст' в главном меню."
     
     await message.answer(
         result_text,
-        reply_markup=get_after_photos_keyboard(),  # Обновленная клавиатура с кнопкой пропуска
+        reply_markup=get_after_photos_keyboard(),
         parse_mode=ParseMode.HTML
     )
     
@@ -2306,8 +2249,9 @@ async def process_custom_name(message: Message, state: FSMContext):
             total_processed = user_album_data[user_id].get('processed', 0) + 1
             total = user_album_data[user_id].get('total', 0)
             
-            # Устанавливаем флаг, что пользователь загрузил фото
+            # Устанавливаем флаги
             user_has_uploaded_photos[user_id] = True
+            user_can_send_text[user_id] = True
             
             # Получаем ссылки на текущую и основную папки
             current_folder = disk_uploader.get_current_folder()
@@ -2320,11 +2264,11 @@ async def process_custom_name(message: Message, state: FSMContext):
             )
             
             result_text += f"📂 <a href='{BASE_FOLDER_URL}'>Основная папка (Фото за МК)</a>\n\n"
-            result_text += "Что делаем дальше?"
+            result_text += "Ты можешь отправить текст с описанием МК позже, нажав кнопку '📝 Отправить текст' в главном меню."
             
             await message.answer(
                 result_text,
-                reply_markup=get_after_photos_keyboard(),  # Обновленная клавиатура с кнопкой пропуска
+                reply_markup=get_after_photos_keyboard(),
                 parse_mode=ParseMode.HTML
             )
             
@@ -2387,8 +2331,9 @@ async def use_auto_name(message: Message, state: FSMContext):
             total_processed = user_album_data[user_id].get('processed', 0) + 1
             total = user_album_data[user_id].get('total', 0)
             
-            # Устанавливаем флаг, что пользователь загрузил фото
+            # Устанавливаем флаги
             user_has_uploaded_photos[user_id] = True
+            user_can_send_text[user_id] = True
             
             # Получаем ссылки на текущую и основную папки
             current_folder = disk_uploader.get_current_folder()
@@ -2401,11 +2346,11 @@ async def use_auto_name(message: Message, state: FSMContext):
             )
             
             result_text += f"📂 <a href='{BASE_FOLDER_URL}'>Основная папка (Фото за МК)</a>\n\n"
-            result_text += "Что делаем дальше?"
+            result_text += "Ты можешь отправить текст с описанием МК позже, нажав кнопку '📝 Отправить текст' в главном меню."
             
             await message.answer(
                 result_text,
-                reply_markup=get_after_photos_keyboard(),  # Обновленная клавиатура с кнопкой пропуска
+                reply_markup=get_after_photos_keyboard(),
                 parse_mode=ParseMode.HTML
             )
             
@@ -2451,8 +2396,9 @@ async def upload_all_with_autonames(message: Message, state: FSMContext):
         
         user_photo_data[user_id].pop(0)
     
-    # Устанавливаем флаг, что пользователь загрузил фото
+    # Устанавливаем флаги
     user_has_uploaded_photos[user_id] = True
+    user_can_send_text[user_id] = True
     
     current_folder = disk_uploader.get_current_folder()
     
@@ -2475,9 +2421,11 @@ async def upload_all_with_autonames(message: Message, state: FSMContext):
         result_text += f"\n📚 {total} фото полностью обработаны!"
         del user_album_data[user_id]
     
+    result_text += "\n\nТы можешь отправить текст с описанием МК позже, нажав кнопку '📝 Отправить текст' в главном меню."
+    
     await message.answer(
         result_text,
-        reply_markup=get_after_photos_keyboard(),  # Обновленная клавиатура с кнопкой пропуска
+        reply_markup=get_after_photos_keyboard(),
         parse_mode=ParseMode.HTML
     )
     
@@ -2528,7 +2476,6 @@ async def cancel_upload(message: Message, state: FSMContext):
     if current_state in [TextStates.waiting_for_fio.state, TextStates.waiting_for_text.state, TextStates.waiting_for_text_description.state]:
         await message.answer(
             "❌ <b>Нельзя отменить процесс после начала ввода текста!</b>\n\n"
-            "Вы ОБЯЗАНЫ ввести ФИО, текст и описание.\n"
             "Пожалуйста, продолжайте ввод.",
             reply_markup=ReplyKeyboardRemove()
         )
